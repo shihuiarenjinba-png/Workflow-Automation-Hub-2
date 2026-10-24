@@ -1,7 +1,29 @@
-# Workflow-Automation-Hub-2
+# Workflow Automation Hub -2
 
-Consumer -2 edition. Separate product from the existing expert/regular edition.
+Consumer UI, separate product from the regular Workflow Automation Hub.
 
-Code migration, Windows QA and new Microsoft Store product Identity are pending. No MSIX submission or publication approval.
+## Actual implemented scope
+The current app manages **Google Blogger link-insertion jobs only**. It is not an arbitrary website/API automation hub, and does not generate blog articles. Users need their own Google OAuth Desktop client before live Blogger connection. Google login/remote mutation is NOT part of this QA.
 
-Working branch: codex/consumer-v2-initial-20261024. Do not change main/release.
+Consumer -2 home screen shows only real saved Blogger jobs, not synthetic demo jobs. Missing and corrupt job records are distinguished.
+
+## Isolation and provenance
+- Ported exact source from `shihuiarenjinba-png/workflow-automation-hub` commit `a4bd0419e66b1dfaa6208564dd07d07ab2cd662b` (2026-10-24).
+- Root app storage namespace: `WorkflowAutomationHub2`, separate from old product.
+- Windows task name prefix: `WorkflowAutomationHub2_`, separate from old product.
+- QA-only source branch `codex/consumer-v2-initial-20261024`. No main/release changes.
+- Windows workflow builds a QA_UNSIGNED **EXE only**; no MSIX, Store submission or signing.
+
+## HOLD before sale
+- Google OAuth consent, verification, live API permissions, and technical-user credential setup simplification
+- Third-party licence and notice audit
+- Real Windows GUI at 1024x768 / 1280x720, JP/EN, restart/restore, no accidental remote mutations
+- Independent -2 Partner Center Store ID / Package Identity / Publisher / PFN / Version (all UNKNOWN)
+- Store listing assets, MSIX QA, certification and explicit submission approval
+
+## Local checks
+```powershell
+python -m pip install --require-hashes -r requirements-lock.txt
+python -m unittest discover -s tests -v
+python desktop_app.py --self-test
+```

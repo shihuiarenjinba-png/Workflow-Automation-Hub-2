@@ -1,0 +1,8 @@
+# Runtime dependencies / 実行時依存
+# Major-version upper bounds reduce accidental breaking upgrades while still
+# allowing compatible security/bug-fix releases within the supported line.
+google-api-python-client>=2.0,<3
+google-auth>=2.0,<3
+google-auth-httplib2>=0.2,<1
+google-auth-oauthlib>=1.0,<2
+beautifulsoup4>=4.12,<5
