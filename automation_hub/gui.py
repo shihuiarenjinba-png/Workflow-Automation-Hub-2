@@ -18,6 +18,7 @@ from .scheduler import WindowsTaskScheduler
 from .schedule_approval import ScheduleApprovalStore
 from .settings import SettingsStore
 from .ui_flow import home_progress, job_revision, live_run_ready, needs_save
+from .publishing_plan import PublishingPlanError, prepare_publishing_draft
 from consumer_visual_style import apply_consumer_theme
 
 T = TypeVar("T")
@@ -46,6 +47,12 @@ class AutomationHubGUI:
         self.busy = False
         self.preview_revision: str | None = None
         self.google_verified = False  # OAuth token presence is not a verified API connection.
+        # Offline composer is kept separate from Blogger link insertion.
+        self.compose_platform = StringVar(value="YouTube")
+        self.compose_file = StringVar(value="")
+        self.compose_title = StringVar(value="")
+        self.compose_description = StringVar(value="")
+        self.compose_preview_status = StringVar(value="")
         self._async_queue: queue.Queue[tuple[str, Any, Callable[[Any], None] | None]] = queue.Queue()
         self.root.geometry("940x620")
         self.root.minsize(840, 580)
@@ -91,21 +98,145 @@ class AutomationHubGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.home_tab = ttk.Frame(self.notebook, padding=18)
+        self.compose_tab = ttk.Frame(self.notebook, padding=16)
         self.google_tab = ttk.Frame(self.notebook, padding=14)
         self.jobs_tab = ttk.Frame(self.notebook, padding=14)
         self.schedule_tab = ttk.Frame(self.notebook, padding=14)
         self.compliance_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.home_tab, text=self.t("tab_home"))
+        self.notebook.add(
+            self.compose_tab,
+            text="投稿の準備（試作）" if self.locale == "ja" else "Prepare post (preview)",
+        )
         self.notebook.add(self.google_tab, text=self.t("tab_google"))
         self.notebook.add(self.jobs_tab, text=self.t("tab_jobs"))
         self.notebook.add(self.schedule_tab, text=self.t("tab_schedule"))
         self.notebook.add(self.compliance_tab, text=self.t("tab_compliance"))
         self._build_home_tab()
+        self._build_compose_tab()
         self._build_google_tab()
         self._build_jobs_tab()
         self._build_schedule_tab()
         self._build_compliance_tab()
         self.refresh_jobs(show_error=False)
+
+
+    def _build_compose_tab(self) -> None:
+        """A read-only local preview; actual uploading is NOT implemented."""
+        pane = self.compose_tab
+        ja = self.locale == "ja"
+        ttk.Label(
+            pane, text="投稿の準備" if ja else "Prepare a post",
+            font=("Segoe UI", 18, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+        ttk.Label(
+            pane,
+            text=(
+                "ファイルを選んで、投稿先とタイトルを確認します。\n"
+                "※現在は準備画面のみです。Google接続・アップロード・予約投稿はまだ実行できません。"
+                if ja else
+                "Choose a file, destination and title.\n"
+                "Preview only: Google connection, upload and scheduling are not implemented yet."
+            ),
+            wraplength=770, justify="left",
+        ).pack(anchor="w", pady=(0, 14))
+        form = ttk.LabelFrame(
+            pane, text="① 投稿する内容" if ja else "1. Select content",
+            padding=12,
+        )
+        form.pack(fill="x", pady=(0, 12))
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="投稿先" if ja else "Destination").grid(
+            row=0, column=0, sticky="w", pady=6)
+        platform = ttk.Combobox(
+            form, textvariable=self.compose_platform,
+            values=("YouTube", "Blogger"), state="readonly", width=21)
+        platform.grid(row=0, column=1, sticky="w", pady=6)
+        platform.bind("<<ComboboxSelected>>", lambda _e: self.compose_preview_status.set(""))
+
+        ttk.Label(form, text="ファイル" if ja else "Local file").grid(
+            row=1, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.compose_file, state="readonly").grid(
+            row=1, column=1, sticky="ew", pady=6, padx=(0, 8))
+        ttk.Button(
+            form, text="ファイルを選択" if ja else "Browse...",
+            command=self._choose_compose_file,
+        ).grid(row=1, column=2, sticky="w", pady=6)
+
+        ttk.Label(form, text="タイトル" if ja else "Title").grid(
+            row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.compose_title).grid(
+            row=2, column=1, columnspan=2, sticky="ew", pady=6)
+
+        ttk.Label(form, text="説明文" if ja else "Description").grid(
+            row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.compose_description).grid(
+            row=3, column=1, columnspan=2, sticky="ew", pady=6)
+
+        ttk.Button(
+            pane,
+            text="② 投稿内容を確認（アップロードなし）"
+            if ja else "2. Review draft (no upload)",
+            style="Action.TButton", command=self._preview_compose_plan,
+        ).pack(anchor="w", pady=(2, 10))
+        ttk.Label(
+            pane, textvariable=self.compose_preview_status,
+            wraplength=760, justify="left",
+        ).pack(anchor="w")
+        ttk.Label(
+            pane,
+            text=(
+                "公開・下書き保存・Googleアカウント接続は実装後に提供します。"
+                if ja else
+                "Publishing, remote draft creation and account connection are not available yet."
+            ),
+            wraplength=760, justify="left",
+        ).pack(anchor="w", pady=(16, 0))
+
+    def _choose_compose_file(self) -> None:
+        ja = self.locale == "ja"
+        if self.compose_platform.get() == "YouTube":
+            types = [("Videos", "*.mp4 *.mov *.m4v *.webm")]
+        else:
+            types = [("Article files", "*.md *.txt *.html *.htm")]
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="投稿するファイルを選択" if ja else "Choose content file",
+            filetypes=types + [("All files", "*.*")],
+        )
+        if path:
+            self.compose_file.set(path)
+            self.compose_preview_status.set("")
+
+    def _preview_compose_plan(self) -> None:
+        try:
+            draft = prepare_publishing_draft(
+                platform=self.compose_platform.get(),
+                source_path=self.compose_file.get(),
+                title=self.compose_title.get(),
+                description=self.compose_description.get(),
+            )
+        except (OSError, PublishingPlanError) as exc:
+            self.compose_preview_status.set(str(exc))
+            return
+        ja = self.locale == "ja"
+        visibility = (
+            "非公開（将来の投稿時の初期値）" if draft.platform == "youtube"
+            else "下書き（将来の投稿時の初期値）"
+        ) if ja else ("Private (future default)" if draft.platform == "youtube"
+                      else "Draft (future default)")
+        self.compose_preview_status.set(
+            (
+                f"確認できました：{draft.filename} / {draft.file_bytes:,}バイト\n"
+                f"投稿先：{draft.platform} / 初期公開設定：{visibility}\n"
+                "状態：ローカル確認のみ。投稿・予約・認証は行っていません。"
+            ) if ja else (
+                f"Validated: {draft.filename} / {draft.file_bytes:,} bytes\n"
+                f"Destination: {draft.platform} / Default visibility: {visibility}\n"
+                "Status: Local preview only. Not uploaded, scheduled or authenticated."
+            )
+        )
 
     def _build_home_tab(self) -> None:
         """Explain what the product actually does before exposing advanced settings."""
