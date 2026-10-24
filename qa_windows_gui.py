@@ -63,7 +63,7 @@ def main(out):
             root.geometry("1024x768+30+30")
             root.deiconify()
             root.update()
-            if app.notebook.index("end") != 5:
+            if app.notebook.index("end") != 6:
                 raise AssertionError("Expected five functional tabs")
             if app.home_saved_jobs.get(0) != "まだ登録がありません":
                 raise AssertionError("UI invents a job or fails to show empty state")
@@ -85,6 +85,28 @@ def main(out):
             checks.append({"case":"japanese_home_with_saved_job","requested":[1024,768],
                            **screenshot(root,out,"hub-v2-ja-saved-1024x768.png")})
 
+            # Offline post preparation. Never use OAuth or perform remote mutations.
+            local_article = directory / "post.md"
+            local_article.write_text("# Synthetic article", encoding="utf-8")
+            app.compose_platform.set("Blogger")
+            app.compose_file.set(str(local_article))
+            app.compose_title.set("QA 投稿確認")
+            app._preview_compose_plan()
+            if "ローカル確認のみ" not in app.compose_preview_status.get():
+                raise AssertionError("Composer must say there was no upload")
+            app.notebook.select(app.compose_tab)
+            root.update()
+            checks.append({"case":"ja_content_prep_no_upload",
+                           **screenshot(root,out,"hub-v2-ja-content-preview.png")})
+            local_video = directory / "test.mp4"
+            local_video.write_bytes(b"synthetic-video-bytes")
+            app.compose_platform.set("YouTube")
+            app.compose_file.set(str(local_video))
+            app.compose_title.set("Video example")
+            app._preview_compose_plan()
+            if "非公開" not in app.compose_preview_status.get():
+                raise AssertionError("Video must default to private in draft preview")
+            checks.append({"case":"youtube_local_only", "passed": True})
             app.notebook.select(app.jobs_tab)
             root.update()
             checks.append({"case":"japanese_job_editor","requested":[1024,768],
@@ -94,7 +116,7 @@ def main(out):
             app.build_ui()
             root.geometry("1280x720+30+30")
             root.update()
-            if app.notebook.index("end") != 5:
+            if app.notebook.index("end") != 6:
                 raise AssertionError("Language change removed tabs")
             checks.append({"case":"english_home","requested":[1280,720],
                            **screenshot(root,out,"hub-v2-en-home-requested1280x720.png")})
