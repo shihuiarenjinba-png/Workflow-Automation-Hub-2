@@ -321,3 +321,31 @@ class GoogleBloggerConnector:
             ).execute(num_retries=0)  # No automatic replay of a mutating request.
         except HttpError as exc:
             raise GoogleBloggerError(f"Could not update Blogger post / Blogger記事を更新できません: {exc}") from exc
+
+    def create_draft(self, blog_id: str, title: str, html_body: str) -> dict[str, Any]:
+        """Insert one remote Blogger DRAFT, never a public post.
+
+        Caller MUST confirm blog ownership, content fingerprint and explicit
+        user approval beforehand. No automatic retries on write requests.
+        """
+        if not blog_id.isdigit() or not title.strip() or not html_body.strip():
+            raise GoogleBloggerError("Invalid Blogger draft request")
+        try:
+            response = self._service().posts().insert(
+                blogId=blog_id,
+                isDraft=True,
+                body={"kind": "blogger#post", "title": title.strip(),
+                      "content": html_body},
+            ).execute(num_retries=0)
+        except HttpError as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            raise GoogleBloggerError(
+                f"Blogger draft API HTTP {status or 'error'}; verify Blogger before retry"
+            ) from exc
+        # Timeout or transport errors intentionally propagate to the caller.
+        # A remote draft may exist even if the client saw no successful reply.
+        if not isinstance(response, dict) or not response.get("id"):
+            raise GoogleBloggerError(
+                "Blogger did not confirm a post ID; check drafts before retry"
+            )
+        return response

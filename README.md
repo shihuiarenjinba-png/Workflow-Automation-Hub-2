@@ -9,10 +9,19 @@ with official OAuth → choose destination → preview → schedule/publish → 
 Screenshot saving in Browser -2 is not the core product. The unified implementation
 and release requirements are in [CONTENT_PUBLISHING_V2_PLAN.md](CONTENT_PUBLISHING_V2_PLAN.md).
 
-The new **Prepare post (preview)** tab can only validate local Blogger articles and
-YouTube video files and show an offline draft preview. It **cannot** authenticate,
-upload, schedule, or publish. Existing Blogger link insertion remains a separate,
-unchanged feature. All upload and publication claims remain HOLD.
+The **Prepare post** tab validates Blogger article files and YouTube video files
+locally. An experimental Blogger-only button can create one **REMOTE DRAFT** using
+the already configured Google OAuth Desktop client, verified blog selection, a
+matching file fingerprint and explicit user approval. Existing Blogger link
+insertion remains a separate feature. No live Blogger test has been authorized
+or executed; this feature is NOT production-qualified yet.
+
+**No YouTube upload, remote scheduling, Blogger public publication or universal
+social-media integrations are implemented.** Only UTF-8 .txt/.md article files
+can create remote Blogger drafts; .html can be previewed locally but cannot be
+sent until vetted conversion is implemented. Markdown formatting is treated as
+escaped plain text. The description becomes a first paragraph. All general
+upload/publication marketing claims remain HOLD.
 
 ## Actual implemented scope
 The current app manages **Google Blogger link-insertion jobs only**. It is not an arbitrary website/API automation hub, and does not generate blog articles. Users need their own Google OAuth Desktop client before live Blogger connection. Google login/remote mutation is NOT part of this QA.

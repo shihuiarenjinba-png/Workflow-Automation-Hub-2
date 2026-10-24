@@ -19,6 +19,7 @@ from .schedule_approval import ScheduleApprovalStore
 from .settings import SettingsStore
 from .ui_flow import home_progress, job_revision, live_run_ready, needs_save
 from .publishing_plan import PublishingPlanError, prepare_publishing_draft
+from .blogger_draft import PreparedBloggerDraft, create_approved_remote_draft, prepare_blogger_draft
 from consumer_visual_style import apply_consumer_theme
 
 T = TypeVar("T")
@@ -53,6 +54,12 @@ class AutomationHubGUI:
         self.compose_title = StringVar(value="")
         self.compose_description = StringVar(value="")
         self.compose_preview_status = StringVar(value="")
+        self.compose_blog = StringVar(value="")
+        self.compose_review: PreparedBloggerDraft | None = None
+        self.compose_review_fields: tuple[str, ...] | None = None
+        for variable in (self.compose_platform, self.compose_file,
+                         self.compose_title, self.compose_description, self.compose_blog):
+            variable.trace_add("write", lambda *_args: self._invalidate_compose_review())
         self._async_queue: queue.Queue[tuple[str, Any, Callable[[Any], None] | None]] = queue.Queue()
         self.root.geometry("940x620")
         self.root.minsize(840, 580)
@@ -89,7 +96,12 @@ class AutomationHubGUI:
         lang = ttk.Combobox(top, textvariable=self.language_var, values=["日本語", "English"], state="readonly", width=10)
         lang.pack(side="left", padx=(6, 12))
         lang.bind("<<ComboboxSelected>>", self.on_language_change)
-        ttk.Label(top, text=self.t("desktop_note")).pack(side="left", padx=10)
+        ttk.Label(
+            top, text=(
+                "投稿の準備とBlogger記事リンク管理"
+                if self.locale == "ja" else "Content preparation and Blogger link management"
+            ),
+        ).pack(side="left", padx=10)
         self.operation_status = StringVar(
             value=self.t("busy_processing") if self.busy else ""
         )
@@ -104,11 +116,11 @@ class AutomationHubGUI:
         self.schedule_tab = ttk.Frame(self.notebook, padding=14)
         self.compliance_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.home_tab, text=self.t("tab_home"))
+        self.notebook.add(self.google_tab, text=self.t("tab_google"))
         self.notebook.add(
             self.compose_tab,
-            text="投稿の準備（試作）" if self.locale == "ja" else "Prepare post (preview)",
+            text="投稿・下書き（試験）" if self.locale == "ja" else "Post & draft (beta)",
         )
-        self.notebook.add(self.google_tab, text=self.t("tab_google"))
         self.notebook.add(self.jobs_tab, text=self.t("tab_jobs"))
         self.notebook.add(self.schedule_tab, text=self.t("tab_schedule"))
         self.notebook.add(self.compliance_tab, text=self.t("tab_compliance"))
@@ -122,7 +134,7 @@ class AutomationHubGUI:
 
 
     def _build_compose_tab(self) -> None:
-        """A read-only local preview; actual uploading is NOT implemented."""
+        """Local preview and explicitly approved experimental Blogger DRAFT."""
         pane = self.compose_tab
         ja = self.locale == "ja"
         ttk.Label(
@@ -133,10 +145,10 @@ class AutomationHubGUI:
             pane,
             text=(
                 "ファイルを選んで、投稿先とタイトルを確認します。\n"
-                "※現在は準備画面のみです。Google接続・アップロード・予約投稿はまだ実行できません。"
+                "Bloggerの下書き保存は試験機能です。YouTube動画のアップロード・予約投稿はまだ利用できません。"
                 if ja else
                 "Choose a file, destination and title.\n"
-                "Preview only: Google connection, upload and scheduling are not implemented yet."
+                "Blogger draft saving is experimental. YouTube uploads and scheduling are not available."
             ),
             wraplength=770, justify="left",
         ).pack(anchor="w", pady=(0, 14))
@@ -174,6 +186,18 @@ class AutomationHubGUI:
         ttk.Entry(form, textvariable=self.compose_description).grid(
             row=3, column=1, columnspan=2, sticky="ew", pady=6)
 
+        # Publishing destinations are selected from the actually verified
+        # Blogger API list. Never accept free-form remote blog IDs.
+        blog_area = ttk.Frame(pane)
+        blog_area.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            blog_area, text="Bloggerの投稿先" if ja else "Connected Blogger blog",
+        ).pack(side="left", padx=(0, 10))
+        self.compose_blog_combo = ttk.Combobox(
+            blog_area, textvariable=self.compose_blog, state="readonly", width=42,
+            values=list(self.blog_display_to_id),
+        )
+        self.compose_blog_combo.pack(side="left")
         ttk.Button(
             pane,
             text="② 投稿内容を確認（アップロードなし）"
@@ -184,15 +208,24 @@ class AutomationHubGUI:
             pane, textvariable=self.compose_preview_status,
             wraplength=760, justify="left",
         ).pack(anchor="w")
+        self.compose_submit_button = ttk.Button(
+            pane,
+            text="③ Bloggerに非公開下書きを保存（試験機能）" if ja
+                 else "3. Create a Blogger draft (experimental)",
+            command=self._submit_compose_blogger_draft,
+            state="disabled",
+        )
+        self.compose_submit_button.pack(anchor="w", pady=(12, 6))
         ttk.Label(
             pane,
             text=(
-                "公開・下書き保存・Googleアカウント接続は実装後に提供します。"
+                "事前にGoogle接続タブで認証・接続確認が必要です。"
+                "投稿の失敗時はBlogger側を確認してから再操作してください。"
                 if ja else
-                "Publishing, remote draft creation and account connection are not available yet."
-            ),
-            wraplength=760, justify="left",
-        ).pack(anchor="w", pady=(16, 0))
+                "Verify your Blogger account in the Google tab first. "
+                "After any failure, check Blogger before retrying."
+            ), wraplength=760, justify="left",
+        ).pack(anchor="w", pady=(0, 12))
 
     def _choose_compose_file(self) -> None:
         ja = self.locale == "ja"
@@ -209,7 +242,19 @@ class AutomationHubGUI:
             self.compose_file.set(path)
             self.compose_preview_status.set("")
 
+    def _invalidate_compose_review(self) -> None:
+        self.compose_review = None
+        self.compose_review_fields = None
+        if hasattr(self, "compose_submit_button"):
+            self.compose_submit_button.configure(state="disabled")
+
+    def _compose_fields(self) -> tuple[str, ...]:
+        return (self.compose_platform.get(), self.compose_file.get(),
+                self.compose_title.get(), self.compose_description.get(),
+                self.compose_blog.get())
+
     def _preview_compose_plan(self) -> None:
+        self._invalidate_compose_review()
         try:
             draft = prepare_publishing_draft(
                 platform=self.compose_platform.get(),
@@ -220,6 +265,16 @@ class AutomationHubGUI:
         except (OSError, PublishingPlanError) as exc:
             self.compose_preview_status.set(str(exc))
             return
+        if draft.platform == "blogger" and self.google_verified:
+            selected = self.blog_display_to_id.get(self.compose_blog.get(), "")
+            if selected:
+                try:
+                    self.compose_review = prepare_blogger_draft(draft, selected)
+                    self.compose_review_fields = self._compose_fields()
+                    self.compose_submit_button.configure(state="normal")
+                except PublishingPlanError as exc:
+                    self.compose_preview_status.set(str(exc))
+                    return
         ja = self.locale == "ja"
         visibility = (
             "非公開（将来の投稿時の初期値）" if draft.platform == "youtube"
@@ -236,6 +291,61 @@ class AutomationHubGUI:
                 f"Destination: {draft.platform} / Default visibility: {visibility}\n"
                 "Status: Local preview only. Not uploaded, scheduled or authenticated."
             )
+        )
+
+    def _submit_compose_blogger_draft(self) -> None:
+        """Explicit confirmation creates ONE remote Blogger DRAFT, never public."""
+        if self._reject_if_busy():
+            return
+        if not self.google_verified:
+            messagebox.showwarning(
+                "Google接続が必要です" if self.locale == "ja" else "Connect Google",
+                "Google接続タブでアカウントを認証し、ブログを確認してください。"
+                if self.locale == "ja" else "Verify an authorized Blogger account first.",
+                parent=self.root,
+            )
+            return
+        candidate = self.compose_review
+        if (candidate is None or self.compose_review_fields != self._compose_fields()
+                or self.compose_platform.get() != "Blogger"):
+            messagebox.showwarning(
+                "再確認が必要です" if self.locale == "ja" else "Preview required",
+                "変更のないファイル・ブログ・タイトルで再度プレビューしてください。"
+                if self.locale == "ja" else "Review the unchanged file, blog and title first.",
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno(
+            "Bloggerの下書き保存" if self.locale == "ja" else "Create Blogger draft",
+            (
+                f"投稿先：{self.compose_blog.get()}\n"
+                f"タイトル：{candidate.title}\n"
+                "Bloggerへ非公開の下書きを1件作成します。公開はしません。よろしいですか？"
+            ) if self.locale == "ja" else (
+                f"Blog: {self.compose_blog.get()}\nTitle: {candidate.title}\n"
+                "Create ONE remote Blogger draft? It will NOT be published."
+            ),
+            parent=self.root,
+        ):
+            return
+        # Consume the approval before the remote call, including timeouts.
+        self._invalidate_compose_review()
+        self.compose_preview_status.set(
+            "Blogger下書きを作成中…" if self.locale == "ja" else "Creating remote draft..."
+        )
+        self.run_async(
+            lambda: create_approved_remote_draft(
+                self.google, candidate, approved=True,
+                expected_sha256=candidate.source_sha256,
+            ),
+            self._after_compose_blogger_draft,
+        )
+
+    def _after_compose_blogger_draft(self, result: Any) -> None:
+        self.compose_preview_status.set(
+            (f"Bloggerに非公開下書きを作成しました（記事ID：{result.post_id}）。公開はしていません。")
+            if self.locale == "ja" else
+            (f"Remote Blogger draft created (post ID: {result.post_id}). Not published.")
         )
 
     def _build_home_tab(self) -> None:
@@ -728,6 +838,10 @@ class AutomationHubGUI:
             display = f"{blog.get('name', '')} — {blog.get('url', '')}".strip(" —") or blog.get("id", "")
             displays.append(display)
             self.blog_display_to_id[display] = blog.get("id", "")
+        if hasattr(self, "compose_blog_combo"):
+            self.compose_blog_combo["values"] = displays
+            if self.compose_blog.get() not in self.blog_display_to_id:
+                self.compose_blog.set("")
         if hasattr(self, "blog_combo"):
             self.blog_combo["values"] = displays
             current = self.blog_var.get().strip()
