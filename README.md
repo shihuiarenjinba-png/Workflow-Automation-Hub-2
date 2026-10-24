@@ -2,6 +2,18 @@
 
 Consumer UI, separate product from the regular Workflow Automation Hub.
 
+## Intended product direction: cross-platform content publishing
+
+The owner's intended consumer experience is **select local content → connect account
+with official OAuth → choose destination → preview → schedule/publish → show true results**.
+Screenshot saving in Browser -2 is not the core product. The unified implementation
+and release requirements are in [CONTENT_PUBLISHING_V2_PLAN.md](CONTENT_PUBLISHING_V2_PLAN.md).
+
+The new **Prepare post (preview)** tab can only validate local Blogger articles and
+YouTube video files and show an offline draft preview. It **cannot** authenticate,
+upload, schedule, or publish. Existing Blogger link insertion remains a separate,
+unchanged feature. All upload and publication claims remain HOLD.
+
 ## Actual implemented scope
 The current app manages **Google Blogger link-insertion jobs only**. It is not an arbitrary website/API automation hub, and does not generate blog articles. Users need their own Google OAuth Desktop client before live Blogger connection. Google login/remote mutation is NOT part of this QA.
 

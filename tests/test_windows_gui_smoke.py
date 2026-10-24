@@ -87,7 +87,7 @@ class WindowsGuiSmokeTests(unittest.TestCase):
         on_success(operation())
 
     def test_home_explains_product_and_navigates_to_real_tabs(self) -> None:
-        self.assertEqual(self.app.notebook.index("end"), 5)
+        self.assertEqual(self.app.notebook.index("end"), 6)
         self.assertIn("はじめに", self.app.notebook.tab(0, "text"))
         self.assertIn("Blogger", self.app.t("home_what"))
         buttons = self._buttons(self.app.home_tab)
