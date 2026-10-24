@@ -96,7 +96,12 @@ class AutomationHubGUI:
         lang = ttk.Combobox(top, textvariable=self.language_var, values=["日本語", "English"], state="readonly", width=10)
         lang.pack(side="left", padx=(6, 12))
         lang.bind("<<ComboboxSelected>>", self.on_language_change)
-        ttk.Label(top, text=self.t("desktop_note")).pack(side="left", padx=10)
+        ttk.Label(
+            top, text=(
+                "投稿の準備とBlogger記事リンク管理"
+                if self.locale == "ja" else "Content preparation and Blogger link management"
+            ),
+        ).pack(side="left", padx=10)
         self.operation_status = StringVar(
             value=self.t("busy_processing") if self.busy else ""
         )
@@ -111,11 +116,11 @@ class AutomationHubGUI:
         self.schedule_tab = ttk.Frame(self.notebook, padding=14)
         self.compliance_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.home_tab, text=self.t("tab_home"))
+        self.notebook.add(self.google_tab, text=self.t("tab_google"))
         self.notebook.add(
             self.compose_tab,
-            text="投稿の準備（試作）" if self.locale == "ja" else "Prepare post (preview)",
+            text="投稿・下書き（試験）" if self.locale == "ja" else "Post & draft (beta)",
         )
-        self.notebook.add(self.google_tab, text=self.t("tab_google"))
         self.notebook.add(self.jobs_tab, text=self.t("tab_jobs"))
         self.notebook.add(self.schedule_tab, text=self.t("tab_schedule"))
         self.notebook.add(self.compliance_tab, text=self.t("tab_compliance"))
@@ -203,12 +208,14 @@ class AutomationHubGUI:
             pane, textvariable=self.compose_preview_status,
             wraplength=760, justify="left",
         ).pack(anchor="w")
-        ttk.Button(
+        self.compose_submit_button = ttk.Button(
             pane,
             text="③ Bloggerに非公開下書きを保存（試験機能）" if ja
                  else "3. Create a Blogger draft (experimental)",
             command=self._submit_compose_blogger_draft,
-        ).pack(anchor="w", pady=(12, 6))
+            state="disabled",
+        )
+        self.compose_submit_button.pack(anchor="w", pady=(12, 6))
         ttk.Label(
             pane,
             text=(
@@ -238,6 +245,8 @@ class AutomationHubGUI:
     def _invalidate_compose_review(self) -> None:
         self.compose_review = None
         self.compose_review_fields = None
+        if hasattr(self, "compose_submit_button"):
+            self.compose_submit_button.configure(state="disabled")
 
     def _compose_fields(self) -> tuple[str, ...]:
         return (self.compose_platform.get(), self.compose_file.get(),
@@ -262,6 +271,7 @@ class AutomationHubGUI:
                 try:
                     self.compose_review = prepare_blogger_draft(draft, selected)
                     self.compose_review_fields = self._compose_fields()
+                    self.compose_submit_button.configure(state="normal")
                 except PublishingPlanError as exc:
                     self.compose_preview_status.set(str(exc))
                     return
