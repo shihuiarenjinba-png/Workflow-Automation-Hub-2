@@ -18,6 +18,7 @@ from .scheduler import WindowsTaskScheduler
 from .schedule_approval import ScheduleApprovalStore
 from .settings import SettingsStore
 from .ui_flow import home_progress, job_revision, live_run_ready, needs_save
+from consumer_visual_style import apply_consumer_theme
 
 T = TypeVar("T")
 
@@ -25,6 +26,7 @@ T = TypeVar("T")
 class AutomationHubGUI:
     def __init__(self, root: Tk) -> None:
         self.root = root
+        apply_consumer_theme(root)
         self.settings_store = SettingsStore()
         self.job_store = JobStore()
         self.scheduler = WindowsTaskScheduler()
@@ -45,7 +47,7 @@ class AutomationHubGUI:
         self.preview_revision: str | None = None
         self.google_verified = False  # OAuth token presence is not a verified API connection.
         self._async_queue: queue.Queue[tuple[str, Any, Callable[[Any], None] | None]] = queue.Queue()
-        self.root.geometry("940x670")
+        self.root.geometry("940x620")
         self.root.minsize(840, 580)
         self._migrate_legacy_google_config()
         self.build_ui()
@@ -110,7 +112,8 @@ class AutomationHubGUI:
         # A vertical viewport keeps real jobs and the 3 setup steps reachable
         # on a smaller Windows display or at increased text scaling.
         viewport = self.home_tab
-        self.home_canvas = Canvas(viewport, highlightthickness=0, borderwidth=0)
+        self.home_canvas = Canvas(viewport, background="#101720",
+                                  highlightthickness=0, borderwidth=0)
         self.home_scrollbar = ttk.Scrollbar(
             viewport, orient="vertical", command=self.home_canvas.yview)
         self.home_canvas.configure(yscrollcommand=self.home_scrollbar.set)
