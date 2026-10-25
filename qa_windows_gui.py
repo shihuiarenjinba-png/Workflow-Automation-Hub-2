@@ -162,12 +162,26 @@ def main(out):
             checks.append({"case":"no_remote_auth_mutation_or_scheduler_registration","passed":True})
         finally:
             root.destroy()
+    size_mismatches = [
+        {"case": item["case"], "requested": item["requested"],
+         "actual": item["actual_resolution"]}
+        for item in checks
+        if "requested" in item and item.get("actual_resolution") != item["requested"]
+    ]
     report={"product":"Workflow Automation Hub -2",
             "scope":"ephemeral Windows GUI smoke, mocked integrations",
             "human_real_machine_QA":False, "live_google":False, "blogger_mutation":False,
-            "store_msix_installed":False, "checks":checks}
+            "store_msix_installed":False, "checks":checks,
+            "gui_size_acceptance": "FAIL" if size_mismatches else "PASS",
+            "gui_size_mismatches": size_mismatches}
     (out/"gui_qa_report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
-    print("HUB-V2-GUI-QA PASS: "+json.dumps(report,ensure_ascii=False))
+    if size_mismatches:
+        print("HUB-V2-GUI-QA SIZE FAIL: " + json.dumps(report, ensure_ascii=False))
+        raise AssertionError(
+            "Windows GUI acceptance FAILED: requested viewport differs from actual "
+            + json.dumps(size_mismatches, ensure_ascii=False)
+        )
+    print("HUB-V2-GUI-QA PASS: " + json.dumps(report, ensure_ascii=False))
 
 
 if __name__=="__main__":
