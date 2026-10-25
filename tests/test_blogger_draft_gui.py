@@ -13,6 +13,7 @@ from automation_hub import gui as gui_module
 from automation_hub.jobs import JobStore
 from automation_hub.settings import SettingsStore
 from automation_hub.schedule_approval import ScheduleApprovalStore
+from automation_hub.publishing_history import PublishingJournal
 
 
 @unittest.skipUnless(sys.platform == "win32", "Tk Windows GUI validation")
@@ -23,6 +24,11 @@ class BloggerDraftGuiTests(unittest.TestCase):
         base = Path(self.tmp.name)
         self.article = base / "article.txt"
         self.article.write_text("Test article", encoding="utf-8")
+        self.journal = PublishingJournal(base / "history.db")
+        self.journal_patch = patch.object(
+            gui_module, "PublishingJournal", return_value=self.journal)
+        self.journal_patch.start()
+        self.addCleanup(self.journal_patch.stop)
         self.google = MagicMock()
         self.google.has_client_config.return_value = False
         self.google.has_token.return_value = False
@@ -58,6 +64,8 @@ class BloggerDraftGuiTests(unittest.TestCase):
             self.app._submit_compose_blogger_draft()
         self.google.create_draft.assert_called_once()
         self.assertIn("post-321", self.app.compose_preview_status.get())
+        self.assertEqual(self.journal.recent()[0]["state"], "REMOTE_DRAFT")
+        self.assertEqual(self.journal.recent()[0]["remote_id"], "post-321")
         # A repeated click cannot submit again until an explicit new preview.
         with patch.object(gui_module.messagebox, "showwarning"):
             self.app._submit_compose_blogger_draft()
