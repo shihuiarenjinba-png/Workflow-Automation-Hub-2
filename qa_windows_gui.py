@@ -19,6 +19,8 @@ from automation_hub.jobs import JobStore
 from automation_hub.settings import SettingsStore
 from automation_hub.schedule_approval import ScheduleApprovalStore
 from automation_hub.models import BloggerLinkJob
+from automation_hub.publishing_history import PublishingJournal
+from tkinter import ttk
 
 
 def screenshot(root, directory, name):
@@ -107,6 +109,36 @@ def main(out):
             if "非公開" not in app.compose_preview_status.get():
                 raise AssertionError("Video must default to private in draft preview")
             checks.append({"case":"youtube_local_only", "passed": True})
+            # An actual persisted synthetic journal entry is visible in GUI;
+            # never invent completed publications in the screenshot.
+            journal = PublishingJournal(directory / "publishing_history.sqlite3")
+            journal.reserve(
+                fingerprint="e" * 64, platform="blogger",
+                account_id="1234567", filename="post.md", title="QAの非公開下書き",
+            )
+            journal.mark("e" * 64, "REMOTE_DRAFT", "verified-test-post-id")
+            with patch.object(gui_module, "PublishingJournal", return_value=journal):
+                app._show_compose_history()
+            popup = next(
+                (w for w in root.winfo_children() if isinstance(w, tk.Toplevel)),
+                None,
+            )
+            if popup is None:
+                raise AssertionError("History pop-up did not open")
+            popup.geometry("850x570+12+12")
+            popup.update()
+            history_tree = next(
+                (w for w in popup.winfo_children() if isinstance(w, ttk.Treeview)),
+                None,
+            )
+            if history_tree is None or len(history_tree.get_children()) != 1:
+                raise AssertionError("History missing an actual stored entry")
+            row = history_tree.item(history_tree.get_children()[0], "values")
+            if "Blogger下書き作成済" not in row or "verified-test-post-id" not in row:
+                raise AssertionError(f"Incorrect publishing state: {row!r}")
+            checks.append({"case":"real_local_history_no_remote_mutation",
+                           **screenshot(popup, out, "hub-v2-ja-publishing-history.png")})
+            popup.destroy()
             app.notebook.select(app.jobs_tab)
             root.update()
             checks.append({"case":"japanese_job_editor","requested":[1024,768],
