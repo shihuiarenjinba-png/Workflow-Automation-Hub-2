@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from automation_hub.blogger_draft import (
-    DraftCreationError, create_approved_remote_draft, prepare_blogger_draft,
+    DraftCreationError, DraftPreflightError, DraftOutcomeUnknownError,
+    issue_draft_approval, create_approved_remote_draft, prepare_blogger_draft,
 )
 from automation_hub.google_blogger import GoogleBloggerConnector, GoogleBloggerError
 from automation_hub.publishing_plan import PublishingPlanError, prepare_publishing_draft
@@ -35,8 +36,7 @@ class DraftCreationTests(unittest.TestCase):
 
     def test_reviewed_draft_creates_exactly_one_remote_draft(self):
         outcome = create_approved_remote_draft(
-            self.connector, self.draft, approved=True,
-            expected_sha256=self.draft.source_sha256,
+            self.connector, self.draft, approval=issue_draft_approval(self.draft, confirmed=True),
         )
         self.assertEqual(outcome.state, "REMOTE_DRAFT")
         self.assertEqual(outcome.post_id, "post-100")
@@ -44,21 +44,25 @@ class DraftCreationTests(unittest.TestCase):
             "1234567", "My article", self.draft.content_html,
         )
 
-    def test_without_approval_or_wrong_fingerprint_never_calls_api(self):
-        for approved, fingerprint in [(False, self.draft.source_sha256), (True, "different")]:
-            with self.assertRaises(DraftCreationError):
+    def test_without_approval_or_changed_approval_never_calls_api(self):
+        from dataclasses import replace
+        valid = issue_draft_approval(self.draft, confirmed=True)
+        cases = [issue_draft_approval(self.draft, confirmed=False),
+                 replace(valid, source_sha256="invalid"),
+                 replace(valid, title="different article")]
+        for approval in cases:
+            with self.assertRaises(DraftPreflightError):
                 create_approved_remote_draft(
-                    self.connector, self.draft, approved=approved,
-                    expected_sha256=fingerprint,
+                    self.connector, self.draft, approval=approval,
                 )
+        self.connector.list_blogs.assert_not_called()
         self.connector.create_draft.assert_not_called()
 
     def test_local_file_modified_after_preview_blocks_remote_write(self):
         self.source.write_text("changed text", encoding="utf-8")
         with self.assertRaises(DraftCreationError):
             create_approved_remote_draft(
-                self.connector, self.draft, approved=True,
-                expected_sha256=self.draft.source_sha256,
+                self.connector, self.draft, approval=issue_draft_approval(self.draft, confirmed=True),
             )
         self.connector.list_blogs.assert_not_called()
 
@@ -66,17 +70,15 @@ class DraftCreationTests(unittest.TestCase):
         self.connector.list_blogs.return_value = [{"id": "999", "name": "Different"}]
         with self.assertRaises(DraftCreationError):
             create_approved_remote_draft(
-                self.connector, self.draft, approved=True,
-                expected_sha256=self.draft.source_sha256,
+                self.connector, self.draft, approval=issue_draft_approval(self.draft, confirmed=True),
             )
         self.connector.create_draft.assert_not_called()
 
     def test_timeout_must_not_be_retried_automatically(self):
         self.connector.create_draft.side_effect = TimeoutError("connection timed out")
-        with self.assertRaisesRegex(DraftCreationError, "uncertain"):
+        with self.assertRaises(DraftOutcomeUnknownError):
             create_approved_remote_draft(
-                self.connector, self.draft, approved=True,
-                expected_sha256=self.draft.source_sha256,
+                self.connector, self.draft, approval=issue_draft_approval(self.draft, confirmed=True),
             )
         self.assertEqual(self.connector.create_draft.call_count, 1)
 

@@ -7,6 +7,7 @@ network-bearing methods must be invoked from deliberate user interactions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 import hashlib
 import html
 from pathlib import Path
@@ -97,83 +98,176 @@ def prepare_blogger_draft(draft: PublishingDraft, blog_id: str) -> PreparedBlogg
     )
 
 
+class DraftPreflightError(DraftCreationError):
+    """Definite rejection BEFORE posts.insert; safe to fix and preview again."""
+
+
+class DraftAuthenticationError(DraftPreflightError):
+    """Google login expired or missing. Nothing was posted."""
+
+
+class DraftPermissionError(DraftPreflightError):
+    """Connected Google account cannot access the chosen blog."""
+
+
+class DraftConnectionError(DraftPreflightError):
+    """Could not confirm Blogger access before POST."""
+
+
+class DraftOutcomeUnknownError(DraftCreationError):
+    """The posts.insert request may have reached Blogger. Never auto-retry."""
+
+
+@dataclass(frozen=True)
+class DraftApproval:
+    """An explicit, short-lived user confirmation bound to this exact draft."""
+    blog_id: str
+    title: str
+    source_sha256: str
+    html_sha256: str
+    issued_at_utc: datetime
+    confirmed: bool
+
+
+def issue_draft_approval(prepared: PreparedBloggerDraft, *, confirmed: bool) -> DraftApproval:
+    """Called only after the user has answered the specific GUI confirmation."""
+    return DraftApproval(
+        blog_id=prepared.blog_id, title=prepared.title,
+        source_sha256=prepared.source_sha256,
+        html_sha256=hashlib.sha256(prepared.content_html.encode("utf-8")).hexdigest(),
+        issued_at_utc=datetime.now(timezone.utc), confirmed=confirmed,
+    )
+
+
+def verify_draft_approval(prepared: PreparedBloggerDraft, approval: DraftApproval) -> None:
+    if not isinstance(approval, DraftApproval) or not approval.confirmed:
+        raise DraftPreflightError("Explicit user approval is required before sending")
+    now = datetime.now(timezone.utc)
+    if approval.issued_at_utc.tzinfo is None or not (
+        timedelta(seconds=0) <= now - approval.issued_at_utc <= timedelta(minutes=5)
+    ):
+        raise DraftPreflightError("Approval has expired; preview and approve again")
+    if (prepared.blog_id != approval.blog_id or
+            prepared.title != approval.title or
+            prepared.source_sha256 != approval.source_sha256 or
+            hashlib.sha256(prepared.content_html.encode("utf-8")).hexdigest()
+                != approval.html_sha256):
+        raise DraftPreflightError("Draft changed since approval; review again")
+
+
+def verify_draft_preflight(
+    connector: BloggerDraftConnector, prepared: PreparedBloggerDraft,
+    approval: DraftApproval,
+) -> None:
+    """Checks performed BEFORE reserving an attempt; no remote POST is sent."""
+    verify_draft_approval(prepared, approval)
+    try:
+        raw, _ = _read_safe_text(Path(prepared.source_path))
+    except (OSError, PublishingPlanError) as exc:
+        raise DraftPreflightError("Article is unavailable; review the file again") from exc
+    if hashlib.sha256(raw).hexdigest() != prepared.source_sha256:
+        raise DraftPreflightError("Article changed after preview; review it again")
+    try:
+        authorized = connector.list_blogs()
+    except Exception as exc:
+        # GoogleBloggerConnector can wrap a typed HttpError; inspect the
+        # exception chain rather than parsing or exposing token-bearing URLs.
+        status = None
+        current: BaseException | None = exc
+        for _ in range(6):
+            if current is None:
+                break
+            status = getattr(getattr(current, "resp", None), "status", None)
+            if status is not None:
+                break
+            current = current.__cause__
+        if status == 401:
+            raise DraftAuthenticationError(
+                "Google sign-in expired or invalid. Reconnect; nothing was sent"
+            ) from exc
+        if status == 403:
+            raise DraftPermissionError(
+                "Blogger access denied. Check permissions; nothing was sent"
+            ) from exc
+        raise DraftConnectionError(
+            "Could not check Blogger connection before upload. Nothing was sent"
+        ) from exc
+    if prepared.blog_id not in {str(x.get("id", "")) for x in authorized}:
+        raise DraftPermissionError(
+            "Connected account cannot access this blog. Nothing was sent"
+        )
+
+
+def insert_blogger_draft_once(
+    connector: BloggerDraftConnector, prepared: PreparedBloggerDraft,
+    approval: DraftApproval,
+) -> RemoteBloggerDraft:
+    """One posts.insert attempt. Failure can be ambiguous; no automatic replay."""
+    verify_draft_approval(prepared, approval)
+    try:
+        response = connector.create_draft(
+            prepared.blog_id, prepared.title, prepared.content_html
+        )
+    except Exception as exc:
+        raise DraftOutcomeUnknownError(
+            "Blogger POST result unknown. Check remote drafts before any retry"
+        ) from exc
+    if not isinstance(response, dict) or not str(response.get("id", "")).strip():
+        raise DraftOutcomeUnknownError(
+            "Blogger did not confirm a post ID. Check remote drafts before any retry"
+        )
+    return RemoteBloggerDraft(
+        blog_id=prepared.blog_id, post_id=str(response["id"]),
+        url=str(response.get("url", "")),
+    )
+
+
 def create_approved_remote_draft(
     connector: BloggerDraftConnector,
     prepared: PreparedBloggerDraft,
     *,
-    approved: bool,
-    expected_sha256: str,
+    approval: DraftApproval,
 ) -> RemoteBloggerDraft:
-    """Exactly one insert, no automatic retry if the remote outcome is unknown."""
-    if not approved or not expected_sha256 or expected_sha256 != prepared.source_sha256:
-        raise DraftCreationError("Review and explicitly approve the unchanged article first")
-    source = Path(prepared.source_path)
-    raw, _ = _read_safe_text(source)
-    if hashlib.sha256(raw).hexdigest() != expected_sha256:
-        raise DraftCreationError("File changed after preview; review it again")
+    """Direct-use path: always requires explicit approval and an authorized blog."""
+    verify_draft_preflight(connector, prepared, approval)
+    return insert_blogger_draft_once(connector, prepared, approval)
 
-    # Always re-validate the currently authorized blog before a remote write.
-    if prepared.blog_id not in {str(x.get("id", "")) for x in connector.list_blogs()}:
-        raise DraftCreationError("Selected blog is not accessible in the connected account")
-    try:
-        response = connector.create_draft(prepared.blog_id, prepared.title, prepared.content_html)
-    except Exception as exc:
-        # We cannot determine whether a timed-out POST succeeded; don't retry.
-        raise DraftCreationError(
-            "Draft result uncertain. Check Blogger before trying again; automatic retry disabled"
-        ) from exc
-    if not isinstance(response, dict) or not str(response.get("id", "")).strip():
-        raise DraftCreationError(
-            "Blogger did not return a post ID. Check Blogger before attempting another upload"
-        )
-    return RemoteBloggerDraft(
-        blog_id=prepared.blog_id,
-        post_id=str(response["id"]),
-        url=str(response.get("url", "")),
-    )
 
 def submit_journaled_blogger_draft(
     connector: BloggerDraftConnector,
     prepared: PreparedBloggerDraft,
     journal: "PublishingJournal",
+    *,
+    approval: DraftApproval,
 ) -> RemoteBloggerDraft:
-    """Reserve history BEFORE the one-shot Blogger write.
-
-    Never convert an ambiguous POST outcome into a failed/retryable job.
-    SQLite's unique fingerprint also prevents accidental repeats on restart.
-    """
+    """Preflight before reservation; classify any later POST uncertainty honestly."""
     from .publishing_history import fingerprint_for, PublishingJournalError
 
-    source = Path(prepared.source_path)
-    raw, _ = _read_safe_text(source)
-    if hashlib.sha256(raw).hexdigest() != prepared.source_sha256:
-        raise DraftCreationError("Article changed since preview; review the article again")
+    # Failed OAuth, missing blog or changed article must NOT create a retry lock.
+    verify_draft_preflight(connector, prepared, approval)
     key = fingerprint_for(
         platform="blogger", account_id=prepared.blog_id, title=prepared.title,
         source_sha256=prepared.source_sha256, html_body=prepared.content_html,
     )
     journal.reserve(
         fingerprint=key, platform="blogger", account_id=prepared.blog_id,
-        filename=source.name, title=prepared.title,
+        filename=Path(prepared.source_path).name, title=prepared.title,
     )
     try:
-        result = create_approved_remote_draft(
-            connector, prepared, approved=True, expected_sha256=prepared.source_sha256,
-        )
+        result = insert_blogger_draft_once(connector, prepared, approval)
     except Exception:
-        # A failed network call may already have created the draft remotely.
+        # From here posts.insert MAY have happened. Never auto retry.
         try:
             journal.mark(key, "OUTCOME_UNKNOWN")
         except PublishingJournalError:
-            # Existing PENDING_REMOTE also blocks accidental duplicate uploads.
+            # A PENDING_REMOTE row also blocks a duplicate after a crash.
             pass
         raise
     try:
         journal.mark(key, "REMOTE_DRAFT", result.post_id)
     except PublishingJournalError as exc:
-        # A remote draft exists but cannot be recorded; do not retry it.
         raise DraftCreationError(
-            f"Blogger confirmed post {result.post_id}, but history could not be saved; "
-            "check Blogger before any further attempt"
+            "Blogger confirmed remote draft ID " + result.post_id +
+            ", but local history write failed; do NOT resend"
         ) from exc
     return result

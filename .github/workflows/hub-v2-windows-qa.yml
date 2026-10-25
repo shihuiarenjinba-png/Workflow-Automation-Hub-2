@@ -15,11 +15,11 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout exact SHA
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Install locked requirements and PyInstaller
@@ -45,13 +45,14 @@ jobs:
         run: python qa_windows_gui.py --output gui-review-evidence
       - name: Upload offline Windows GUI evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: WorkflowAutomationHub2-GUI-QA-Evidence
           path: gui-review-evidence/**
           if-no-files-found: warn
       - name: Upload QA_UNSIGNED standalone EXE (never Store MSIX)
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@v6
         with:
           name: WorkflowAutomationHub2-Windows-QA_UNSIGNED
           path: dist/WorkflowAutomationHub2.exe
