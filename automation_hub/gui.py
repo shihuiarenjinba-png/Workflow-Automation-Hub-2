@@ -5,7 +5,7 @@ import queue
 import threading
 import uuid
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, Listbox, StringVar, Tk, filedialog, messagebox
+from tkinter import BooleanVar, Canvas, Listbox, StringVar, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 from typing import Any, Callable, TypeVar
 
@@ -19,7 +19,10 @@ from .schedule_approval import ScheduleApprovalStore
 from .settings import SettingsStore
 from .ui_flow import home_progress, job_revision, live_run_ready, needs_save
 from .publishing_plan import PublishingPlanError, prepare_publishing_draft
-from .blogger_draft import PreparedBloggerDraft, create_approved_remote_draft, prepare_blogger_draft
+from .blogger_draft import (
+    PreparedBloggerDraft, prepare_blogger_draft, submit_journaled_blogger_draft,
+)
+from .publishing_history import PublishingJournal, PublishingJournalError
 from consumer_visual_style import apply_consumer_theme
 
 T = TypeVar("T")
@@ -216,6 +219,11 @@ class AutomationHubGUI:
             state="disabled",
         )
         self.compose_submit_button.pack(anchor="w", pady=(12, 6))
+        ttk.Button(
+            pane,
+            text="投稿履歴・結果不明を確認" if ja else "View publishing history / uncertain results",
+            command=self._show_compose_history,
+        ).pack(anchor="w", pady=(0, 8))
         ttk.Label(
             pane,
             text=(
@@ -334,9 +342,8 @@ class AutomationHubGUI:
             "Blogger下書きを作成中…" if self.locale == "ja" else "Creating remote draft..."
         )
         self.run_async(
-            lambda: create_approved_remote_draft(
-                self.google, candidate, approved=True,
-                expected_sha256=candidate.source_sha256,
+            lambda: submit_journaled_blogger_draft(
+                self.google, candidate, PublishingJournal(),
             ),
             self._after_compose_blogger_draft,
         )
@@ -347,6 +354,61 @@ class AutomationHubGUI:
             if self.locale == "ja" else
             (f"Remote Blogger draft created (post ID: {result.post_id}). Not published.")
         )
+
+    def _show_compose_history(self) -> None:
+        """Display real locally persisted attempt states, not imaginary posts."""
+        if self._reject_if_busy():
+            return
+        try:
+            records = PublishingJournal().recent(30)
+        except PublishingJournalError as exc:
+            messagebox.showerror(self.t("error_title"), str(exc), parent=self.root)
+            return
+        ja = self.locale == "ja"
+        dialog = Toplevel(self.root)
+        dialog.title("投稿履歴（ローカル）" if ja else "Publishing history (local)")
+        dialog.geometry("850x400")
+        dialog.transient(self.root)
+        ttk.Label(
+            dialog,
+            text=(
+                "結果不明・送信中のままの記録は、Blogger側を確認してください。"
+                " この画面からの自動再送はありません。"
+                if ja else
+                "For uncertain/incomplete attempts, check Blogger first. "
+                "This screen never retries an upload."
+            ),
+            wraplength=790, justify="left",
+        ).pack(fill="x", padx=15, pady=(14, 10))
+        columns = ("time", "platform", "title", "status", "remote_id")
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", height=11)
+        for name, label, width in [
+            ("time", "日時（UTC）" if ja else "Time (UTC)", 145),
+            ("platform", "投稿先" if ja else "Platform", 85),
+            ("title", "記事名" if ja else "Title", 230),
+            ("status", "状態" if ja else "State", 155),
+            ("remote_id", "確認済ID" if ja else "Confirmed ID", 160),
+        ]:
+            tree.heading(name, text=label)
+            tree.column(name, width=width, minwidth=70, stretch=True)
+        scroll = ttk.Scrollbar(dialog, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y", pady=(0, 14))
+        tree.pack(fill="both", expand=True, padx=(15, 0), pady=(0, 14))
+        states = {
+            "PENDING_REMOTE": "送信中・要確認" if ja else "Pending / check",
+            "OUTCOME_UNKNOWN": "結果不明・要確認" if ja else "Uncertain / check",
+            "REMOTE_DRAFT": "Blogger下書き作成済" if ja else "Remote draft created",
+        }
+        for rec in records:
+            tree.insert("", "end", values=(
+                rec["updated_utc"], rec["platform"], rec["title"],
+                states.get(rec["state"], rec["state"]), rec["remote_id"],
+            ))
+        if not records:
+            ttk.Label(
+                dialog, text="投稿記録はまだありません。" if ja else "No publishing attempts yet.",
+            ).pack(padx=15, pady=(0, 10))
 
     def _build_home_tab(self) -> None:
         """Explain what the product actually does before exposing advanced settings."""
