@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import MagicMock
 
 from automation_hub.blogger_draft import (
-    DraftCreationError, prepare_blogger_draft, submit_journaled_blogger_draft,
+    DraftCreationError, DraftPreflightError, DraftOutcomeUnknownError,
+    issue_draft_approval, prepare_blogger_draft, submit_journaled_blogger_draft,
 )
 from automation_hub.publishing_plan import prepare_publishing_draft
 from automation_hub.publishing_history import (
@@ -25,6 +26,7 @@ class PublishingHistoryTests(unittest.TestCase):
             title="A test post", description="Only a test",
         )
         self.prepared = prepare_blogger_draft(local, "123456")
+        self.approval = issue_draft_approval(self.prepared, confirmed=True)
         self.path = self.dir / "history.db"
         self.journal = PublishingJournal(self.path)
         self.google = MagicMock()
@@ -32,7 +34,8 @@ class PublishingHistoryTests(unittest.TestCase):
         self.google.create_draft.return_value = {"id": "remote-001", "url": ""}
 
     def test_persists_real_remote_id_without_storing_content_or_tokens(self):
-        result = submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+        result = submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         self.assertEqual(result.post_id, "remote-001")
         rows = PublishingJournal(self.path).recent()
         self.assertEqual(len(rows), 1)
@@ -43,32 +46,37 @@ class PublishingHistoryTests(unittest.TestCase):
         self.assertNotIn("token", repr(rows))
 
     def test_rerun_after_app_restart_does_not_submit_duplicate(self):
-        submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+        submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         with self.assertRaises(DuplicatePublishingAttempt):
             submit_journaled_blogger_draft(
-                self.google, self.prepared, PublishingJournal(self.path))
+                self.google, self.prepared, PublishingJournal(self.path), approval=self.approval)
         self.assertEqual(self.google.create_draft.call_count, 1)
 
     def test_timeout_records_unknown_and_never_auto_retries(self):
         self.google.create_draft.side_effect = TimeoutError("possible remote write")
         with self.assertRaises(DraftCreationError):
-            submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         self.assertEqual(self.journal.recent()[0]["state"], "OUTCOME_UNKNOWN")
         with self.assertRaises(DuplicatePublishingAttempt):
-            submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         self.assertEqual(self.google.create_draft.call_count, 1)
 
     def test_wrong_account_is_not_sent_and_marked_conservatively(self):
         self.google.list_blogs.return_value = [{"id": "999999"}]
         with self.assertRaises(DraftCreationError):
-            submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         self.google.create_draft.assert_not_called()
-        self.assertEqual(self.journal.recent()[0]["state"], "OUTCOME_UNKNOWN")
+        self.assertEqual(self.journal.recent(), [])
 
     def test_file_change_blocks_before_history_or_api_call(self):
         self.article.write_text("Changed after preview", encoding="utf-8")
         with self.assertRaises(DraftCreationError):
-            submit_journaled_blogger_draft(self.google, self.prepared, self.journal)
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
         self.google.create_draft.assert_not_called()
         self.assertEqual(self.journal.recent(), [])
 
@@ -77,8 +85,9 @@ class PublishingHistoryTests(unittest.TestCase):
         impossible.path.write_text("a regular file", encoding="utf-8")
         impossible = PublishingJournal(impossible.path / "history.db")
         with self.assertRaises((PublishingJournalError, OSError)):
-            submit_journaled_blogger_draft(self.google, self.prepared, impossible)
-        self.google.list_blogs.assert_not_called()
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, impossible, approval=self.approval)
+        self.google.list_blogs.assert_called_once()
         self.google.create_draft.assert_not_called()
 
     def test_pre_existing_pending_blocks_even_if_app_crashed(self):
@@ -96,8 +105,8 @@ class PublishingHistoryTests(unittest.TestCase):
         )
         self.assertEqual(self.journal.recent()[0]["state"], "PENDING_REMOTE")
         with self.assertRaises(DuplicatePublishingAttempt):
-            submit_journaled_blogger_draft(self.google, self.prepared,
-                                           PublishingJournal(self.path))
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, PublishingJournal(self.path), approval=self.approval)
         self.google.create_draft.assert_not_called()
 
     def test_invalid_status_never_falsely_marks_success(self):
@@ -114,6 +123,27 @@ class PublishingHistoryTests(unittest.TestCase):
         with self.assertRaises(PublishingJournalError):
             self.journal.mark(key, "REMOTE_DRAFT", "")
         self.assertEqual(self.journal.recent()[0]["state"], "PENDING_REMOTE")
+
+    def test_account_api_exception_before_post_leaves_no_duplicate_lock(self):
+        self.google.list_blogs.side_effect = ConnectionError("auth server unreachable")
+        with self.assertRaises(DraftPreflightError):
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal, approval=self.approval)
+        self.assertEqual(self.journal.recent(), [])
+        self.google.create_draft.assert_not_called()
+        self.google.list_blogs.side_effect = None
+        submit_journaled_blogger_draft(
+            self.google, self.prepared, self.journal, approval=self.approval)
+        self.assertEqual(self.journal.recent()[0]["state"], "REMOTE_DRAFT")
+
+    def test_missing_approval_does_not_reserve_or_send(self):
+        with self.assertRaises(DraftPreflightError):
+            submit_journaled_blogger_draft(
+                self.google, self.prepared, self.journal,
+                approval=issue_draft_approval(self.prepared, confirmed=False))
+        self.assertEqual(self.journal.recent(), [])
+        self.google.list_blogs.assert_not_called()
+        self.google.create_draft.assert_not_called()
 
     def test_recent_limits_range(self):
         self.assertEqual(self.journal.recent(500), [])
