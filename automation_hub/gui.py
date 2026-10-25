@@ -21,6 +21,7 @@ from .ui_flow import home_progress, job_revision, live_run_ready, needs_save
 from .publishing_plan import PublishingPlanError, prepare_publishing_draft
 from .blogger_draft import (
     PreparedBloggerDraft, prepare_blogger_draft, submit_journaled_blogger_draft,
+    issue_draft_approval,
 )
 from .publishing_history import PublishingJournal, PublishingJournalError
 from consumer_visual_style import apply_consumer_theme
@@ -323,7 +324,7 @@ class AutomationHubGUI:
                 parent=self.root,
             )
             return
-        if not messagebox.askyesno(
+        confirmed = messagebox.askyesno(
             "Bloggerの下書き保存" if self.locale == "ja" else "Create Blogger draft",
             (
                 f"投稿先：{self.compose_blog.get()}\n"
@@ -334,8 +335,11 @@ class AutomationHubGUI:
                 "Create ONE remote Blogger draft? It will NOT be published."
             ),
             parent=self.root,
-        ):
+        )
+        if not confirmed:
             return
+        # Specific approval binds this account, title, article hash and HTML.
+        approval = issue_draft_approval(candidate, confirmed=confirmed)
         # Consume the approval before the remote call, including timeouts.
         self._invalidate_compose_review()
         self.compose_preview_status.set(
@@ -343,7 +347,7 @@ class AutomationHubGUI:
         )
         self.run_async(
             lambda: submit_journaled_blogger_draft(
-                self.google, candidate, PublishingJournal(),
+                self.google, candidate, PublishingJournal(), approval=approval,
             ),
             self._after_compose_blogger_draft,
         )
