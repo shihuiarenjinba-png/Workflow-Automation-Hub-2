@@ -45,14 +45,14 @@ jobs:
         run: python qa_windows_gui.py --output gui-review-evidence
       - name: Upload offline Windows GUI evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: WorkflowAutomationHub2-GUI-QA-Evidence
           path: gui-review-evidence/**
           if-no-files-found: warn
       - name: Upload QA_UNSIGNED standalone EXE (never Store MSIX)
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: WorkflowAutomationHub2-Windows-QA_UNSIGNED
           path: dist/WorkflowAutomationHub2.exe
