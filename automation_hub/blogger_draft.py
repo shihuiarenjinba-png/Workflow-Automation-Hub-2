@@ -131,3 +131,49 @@ def create_approved_remote_draft(
         post_id=str(response["id"]),
         url=str(response.get("url", "")),
     )
+
+def submit_journaled_blogger_draft(
+    connector: BloggerDraftConnector,
+    prepared: PreparedBloggerDraft,
+    journal: "PublishingJournal",
+) -> RemoteBloggerDraft:
+    """Reserve history BEFORE the one-shot Blogger write.
+
+    Never convert an ambiguous POST outcome into a failed/retryable job.
+    SQLite's unique fingerprint also prevents accidental repeats on restart.
+    """
+    from .publishing_history import fingerprint_for, PublishingJournalError
+
+    source = Path(prepared.source_path)
+    raw, _ = _read_safe_text(source)
+    if hashlib.sha256(raw).hexdigest() != prepared.source_sha256:
+        raise DraftCreationError("Article changed since preview; review the article again")
+    key = fingerprint_for(
+        platform="blogger", account_id=prepared.blog_id, title=prepared.title,
+        source_sha256=prepared.source_sha256, html_body=prepared.content_html,
+    )
+    journal.reserve(
+        fingerprint=key, platform="blogger", account_id=prepared.blog_id,
+        filename=source.name, title=prepared.title,
+    )
+    try:
+        result = create_approved_remote_draft(
+            connector, prepared, approved=True, expected_sha256=prepared.source_sha256,
+        )
+    except Exception:
+        # A failed network call may already have created the draft remotely.
+        try:
+            journal.mark(key, "OUTCOME_UNKNOWN")
+        except PublishingJournalError:
+            # Existing PENDING_REMOTE also blocks accidental duplicate uploads.
+            pass
+        raise
+    try:
+        journal.mark(key, "REMOTE_DRAFT", result.post_id)
+    except PublishingJournalError as exc:
+        # A remote draft exists but cannot be recorded; do not retry it.
+        raise DraftCreationError(
+            f"Blogger confirmed post {result.post_id}, but history could not be saved; "
+            "check Blogger before any further attempt"
+        ) from exc
+    return result
