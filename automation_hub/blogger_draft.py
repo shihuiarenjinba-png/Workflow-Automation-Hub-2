@@ -102,6 +102,18 @@ class DraftPreflightError(DraftCreationError):
     """Definite rejection BEFORE posts.insert; safe to fix and preview again."""
 
 
+class DraftAuthenticationError(DraftPreflightError):
+    """Google login expired or missing. Nothing was posted."""
+
+
+class DraftPermissionError(DraftPreflightError):
+    """Connected Google account cannot access the chosen blog."""
+
+
+class DraftConnectionError(DraftPreflightError):
+    """Could not confirm Blogger access before POST."""
+
+
 class DraftOutcomeUnknownError(DraftCreationError):
     """The posts.insert request may have reached Blogger. Never auto-retry."""
 
@@ -158,13 +170,31 @@ def verify_draft_preflight(
     try:
         authorized = connector.list_blogs()
     except Exception as exc:
-        raise DraftPreflightError(
-            "Blogger account check failed before upload. Check login and network; "
-            "nothing was sent"
+        # GoogleBloggerConnector can wrap a typed HttpError; inspect the
+        # exception chain rather than parsing or exposing token-bearing URLs.
+        status = None
+        current: BaseException | None = exc
+        for _ in range(6):
+            if current is None:
+                break
+            status = getattr(getattr(current, "resp", None), "status", None)
+            if status is not None:
+                break
+            current = current.__cause__
+        if status == 401:
+            raise DraftAuthenticationError(
+                "Google sign-in expired or invalid. Reconnect; nothing was sent"
+            ) from exc
+        if status == 403:
+            raise DraftPermissionError(
+                "Blogger access denied. Check permissions; nothing was sent"
+            ) from exc
+        raise DraftConnectionError(
+            "Could not check Blogger connection before upload. Nothing was sent"
         ) from exc
     if prepared.blog_id not in {str(x.get("id", "")) for x in authorized}:
-        raise DraftPreflightError(
-            "Blogger permission denied or blog not found; nothing was sent"
+        raise DraftPermissionError(
+            "Connected account cannot access this blog. Nothing was sent"
         )
 
 
